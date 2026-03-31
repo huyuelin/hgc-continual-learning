@@ -5,7 +5,7 @@
 ### Level-Aware Optimizer-State Protection for Continual Learning in Nested Architectures
 
 <p align="center">
-  <img src="figures/paperbanana/laosp_overview_20260328_004443_candidate_1.png" width="90%" alt="LAOSP Overview"/>
+  <img src="figures/paperbanana/laosp_overview.png" width="90%" alt="LAOSP Overview"/>
 </p>
 
 <p align="center">
@@ -124,16 +124,23 @@ python scripts/plotting/plot_hgc_figures.py
 ## Visualizations
 
 <p align="center">
-  <img src="figures/paperbanana/fig2_main_results_20260330_150054_candidate_1.png" width="48%" alt="Main Results"/>
-  <img src="figures/paperbanana/fig3_mechanistic_20260330_150054_candidate_1.png" width="48%" alt="Mechanistic View"/>
+  <img src="figures/paperbanana/laosp_method.png" width="90%" alt="LAOSP Method Diagram"/>
 </p>
+<p align="center"><sub>Three mechanisms of LAOSP: Orthogonal Gradient Projection, Cumulative Accumulation Modulation, and Cross-Level Gradient Distillation.</sub></p>
 
 <p align="center">
-  <img src="figures/paperbanana/fig4_ablation_20260330_150054_candidate_1.png" width="48%" alt="Ablation Study"/>
-  <img src="figures/paperbanana/fig5_scaling_20260330_150054_candidate_1.png" width="48%" alt="Scaling Results"/>
+  <img src="figures/paperbanana/gradient_memory_collapse.png" width="48%" alt="Gradient Memory Collapse"/>
+  <img src="figures/paperbanana/level_aware_comparison.png" width="48%" alt="Level-Aware vs Uniform"/>
 </p>
+<p align="center"><sub>Left: Gradient memory retention without vs. with LAOSP. Right: Level-aware protection vs. uniform baselines.</sub></p>
 
-<sub>Figures generated with <a href="https://github.com/dwzhu-pku/PaperBanana">PaperBanana</a>.</sub>
+<p align="center">
+  <img src="figures/paperbanana/ablation_results.png" width="48%" alt="Ablation Study"/>
+  <img src="figures/paperbanana/fig2_main_results_20260330_150054_candidate_1.png" width="48%" alt="Main Results"/>
+</p>
+<p align="center"><sub>Left: Component ablation study. Right: Main results comparing LAOSP against baselines.</sub></p>
+
+<sub>Figures generated with <a href="https://github.com/dwzhu-pku/PaperBanana">PaperBanana</a> and Gemini image models.</sub>
 
 ## Citation
 
