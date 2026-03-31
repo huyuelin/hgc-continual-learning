@@ -1,8 +1,23 @@
-# LAOSP: Level-Aware Optimizer-State Protection for Continual Learning in Nested Architectures
+<div align="center">
 
-This repository contains the official implementation of the paper:
+# LAOSP
 
-> **Level-Aware Optimizer-State Protection for Continual Learning in Nested Architectures**
+### Level-Aware Optimizer-State Protection for Continual Learning in Nested Architectures
+
+<p align="center">
+  <img src="figures/paperbanana/laosp_overview_20260328_004443_candidate_1.png" width="90%" alt="LAOSP Overview"/>
+</p>
+
+<p align="center">
+  <a href="#method">Method</a> |
+  <a href="#key-results">Results</a> |
+  <a href="#quick-start">Quick Start</a> |
+  <a href="#citation">Citation</a>
+</p>
+
+</div>
+
+---
 
 ## Overview
 
@@ -105,6 +120,20 @@ python experiments/probe_realworld_seq.py
 python scripts/tables/collect_and_generate_tables.py
 python scripts/plotting/plot_hgc_figures.py
 ```
+
+## Visualizations
+
+<p align="center">
+  <img src="figures/paperbanana/fig2_main_results_20260330_150054_candidate_1.png" width="48%" alt="Main Results"/>
+  <img src="figures/paperbanana/fig3_mechanistic_20260330_150054_candidate_1.png" width="48%" alt="Mechanistic View"/>
+</p>
+
+<p align="center">
+  <img src="figures/paperbanana/fig4_ablation_20260330_150054_candidate_1.png" width="48%" alt="Ablation Study"/>
+  <img src="figures/paperbanana/fig5_scaling_20260330_150054_candidate_1.png" width="48%" alt="Scaling Results"/>
+</p>
+
+<sub>Figures generated with <a href="https://github.com/dwzhu-pku/PaperBanana">PaperBanana</a>.</sub>
 
 ## Citation
 
