@@ -1,0 +1,219 @@
+# Data Pipeline (Stage 2)
+
+This document explains how to generate tokenizer artifacts and token shards for Stage 2 training.
+
+## Prerequisites
+- Ensure the `uv` environment is synced (`uv sync --all-extras`).
+- Large storage mounted at `data/raw/` and `data/shards/`.
+- HF datasets cache configured with valid credentials if accessing gated sets.
+
+## Dataset acquisition & licensing
+The Stage 2 mixture mimics RefinedWeb + supplements. Download each source into `data/raw/<source>/` and document provenance before filtering.
+
+| Source | License / Terms | Acquisition Command(s) | Notes |
+|--------|-----------------|------------------------|-------|
+| RefinedWeb / FineWeb proxy | CC BY 4.0 (FineWeb) | `uv run python scripts/data/shard_corpus.py --dataset HuggingFaceFW/fineweb --subset sample-10BT --split train --output data/raw/refinedweb.ndjsonl --limit 20000000` | Keep a copy of the HF dataset card; respect scraping policies. |
+| FineWeb-Edu | CC BY 4.0 (FineWeb) | Use `HuggingFaceFW/fineweb-edu` (e.g., `subset=sample-10BT`) via `scripts/data/filter_corpus.py` + `scripts/data/process_mixture.py`. | Paper-aligned option; prefer long-doc filtering if matching the paper’s setup. |
+| Wikipedia 2023-12 dump | CC BY-SA 3.0 | Download `https://huggingface.co/datasets/wikipedia/20220301.en` via HF CLI or mirror the XML dump. | Use HF `datasets load_dataset` inside the filtering script to avoid storing raw XML. |
+| C4 (en) | ODC-By | `uv run python scripts/data/shard_corpus.py --dataset allenai/c4 --subset en --split train --output data/raw/c4_en.ndjsonl --limit 8000000` | Heavy dataset; ensure disk quota before streaming. |
+| RedPajama CC subset | CC BY | Use `togethercomputer/RedPajama-Data-1T-Sample` or the CC subset tarballs. | Store gzipped JSONL files under `data/raw/redpajama/*.jsonl.gz`. |
+| Code (Stack/Python mix) | Mostly MIT/Apache | Pull from `bigcode/starcoderdata` shards or permissively licensed repos. | Preserve LICENSE metadata per shard (`data/raw/code/LICENSES.md`). |
+
+Every corpus contribution is tracked in `data/manifest/refinedweb_full_manifest.json`. Regenerate or edit this manifest whenever the mixture changes so downstream runs can validate shard presence and licensing.
+
+To verify the manifest against local shards:
+
+```bash
+uv run python scripts/data/validate_mixture.py \
+  --manifest data/manifest/refinedweb_full_manifest.json \
+  --output data/mixtures/refinedweb_mix_manifest_report.json
+```
+
+All raw pulls should include a short README describing the source URL, date retrieved, and any filters applied. Update `docs/data_pipeline.md` whenever the mix changes so downstream users know which corpora are safe to redistribute.
+
+## 1. Train tokenizer (multi-corpus manifest)
+
+```bash
+uv run python scripts/data/train_tokenizer.py \
+  --manifest configs/data/refinedweb_mixture.yaml \
+  --vocab-size 32000 \
+  --output-dir artifacts/tokenizer/refinedweb_mix \
+  --log-file data/mixtures/refinedweb_mix_tokenizer.json
+```
+
+The manifest pulls small samples from FineWeb (RefinedWeb proxy), Wikimedia/Wikipedia, AllenAI C4, SlimPajama, and codeparrot code datasets. Outputs live in `artifacts/tokenizer/refinedweb_mix/`.
+
+### Sample pipeline note (hard vocab limit)
+When training a tokenizer on **tiny local samples**, SentencePiece can fail if it cannot reach the requested `--vocab-size` (default `hard_vocab_limit=true`).
+
+For the repo’s sample pipeline (`scripts/data/run_sample.sh`), we disable this check:
+
+```bash
+uv run python scripts/data/train_tokenizer.py ... --no-hard-vocab-limit
+```
+
+For “paper-faithful” runs, prefer training on a sufficiently large corpus and keep the default `--hard-vocab-limit`.
+
+### Tokenizer checksum
+Record the checksum of every published tokenizer so collaborators can verify integrity before launching runs.
+
+```bash
+uv run python scripts/data/check_tokenizer.py \
+  --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model \
+  --expected-sha256 f8871517ca968839bf6b9595a6e7891e6b8c6a70fd4df788696bce35be62d6c2 \
+  --metadata-json artifacts/tokenizer/refinedweb_mix/checksum.json
+```
+
+The command prints the SHA-256 digest and writes a JSON record (optional). Keep the expected hash in this doc so CI/scripts can assert integrity. Update the hash whenever the tokenizer is retrained.
+
+### Coverage sanity check
+Before publishing a tokenizer, capture coverage metrics on a representative sample:
+
+```bash
+uv run python scripts/data/check_tokenizer_coverage.py \
+  --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model \
+  --sample-file data/filtered/refinedweb_en_sample.txt \
+  --max-lines 5000 \
+  --output data/mixtures/refinedweb_mix_tokenizer_coverage.json
+```
+
+The script reports tokens/word, proportion of single-token words, and a histogram of piece lengths. Add the JSON to your release bundle so collaborators can verify coverage.
+
+#### Automated regression guard
+Add a regression check to CI or pre-release automation to ensure coverage does not drift:
+
+```bash
+uv run python scripts/checks/tokenizer_coverage_guard.py \
+  --baseline data/mixtures/refinedweb_mix_tokenizer_coverage.json \
+  --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model \
+  --sample-file data/filtered/refinedweb_en_sample.txt \
+  --max-lines 5000 \
+  --output data/mixtures/refinedweb_mix_tokenizer_coverage_latest.json
+```
+
+The guard fails if `avg_tokens_per_word` increases by more than `0.05` or if the single/two-token coverage drops by more than `2 %`. Adjust tolerances via CLI flags if a new tokenizer intentionally changes segmentation. Include the generated JSON in release bundles alongside the manifest validation report.
+
+## 2. Shard mixture components
+
+```bash
+uv run python scripts/data/process_mixture.py \
+  configs/data/refinedweb_mixture_filtered.yaml \
+  --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model \
+  --log-file data/mixtures/refinedweb_mix_filtered_shards.json
+```
+
+This iterates over each dataset entry (either streamed from HF or the filtered local files), tokenizes at sequence length 2048, and writes NumPy shards to `data/shards/<dataset>`. Stats (records, sequences, shards, total tokens) are recorded in `data/mixtures/refinedweb_mix_shards_full.json`.
+
+## 3. Legacy pilot data
+- `data/shards/tinystories_train/` retains 1,718 shards for unit tests and smoke runs.
+
+## Troubleshooting Matrix
+
+| Symptom | Likely cause | Deterministic fix |
+|---|---|---|
+| `run_sample.sh` cannot find `artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model` | Tokenizer has not been trained yet | Re-run `uv run bash scripts/data/run_sample.sh`; it auto-trains tokenizer when missing |
+| `Bad split: train. Available splits: ['test']` | Dataset exposes a non-`train` split | Use fallback (`FALLBACK_SPLIT=test uv run bash scripts/data/run_full.sh`) or set per-source split env vars like `RW_SPLIT=test` |
+| `Bad split` in tokenizer/shard/filter scripts | Requested split absent in source dataset | Built-in fallback now resolves in order `train -> validation -> test -> first available` and logs available splits |
+| SentencePiece fails to hit requested vocab size on tiny corpora | `hard_vocab_limit=true` with too little data | Use `--no-hard-vocab-limit` for sample runs; keep hard limit for large production corpora |
+| Tokenizer coverage regresses between runs | Different corpus sample or tokenizer settings | Run `scripts/data/check_tokenizer_coverage.py` and `scripts/checks/tokenizer_coverage_guard.py` against baseline JSON |
+
+## 4. Filtering & deduplication
+Before sharding full-scale corpora, run language filtering + dedup to keep only high-quality English segments:
+
+```bash
+uv run python scripts/data/filter_corpus.py \
+  --dataset HuggingFaceFW/fineweb \
+  --subset sample-10BT \
+  --split train \
+  --text-column text \
+  --output-path data/filtered/fineweb_en.txt \
+  --min-chars 200 \
+  --max-chars 8000 \
+  --lang-threshold 0.85
+```
+
+Adjust dataset/subset arguments per manifest entry. The script enforces language probabilities via `langdetect`, performs length screening, and deduplicates using a rolling hash window. Point `scripts/data/process_mixture.py` to these filtered files (or custom dataset definitions) for large-scale processing.
+
+## 4.1 FineWeb-Edu manifests (paper-aligned)
+
+This repo includes two manifest recipes for FineWeb-Edu:
+- `configs/data/fineweb_edu_mixture_sample.yaml` (subset `sample-10BT`, bounded `max_records`)
+- `configs/data/fineweb_edu_mixture_full.yaml` (subset `sample-100BT`, `seq_len=4096`)
+
+Tokenizer training:
+```bash
+uv run python scripts/data/train_tokenizer.py \
+  --manifest configs/data/fineweb_edu_mixture_sample.yaml \
+  --vocab-size 32000 \
+  --output-dir artifacts/tokenizer/fineweb_edu \
+  --log-file data/mixtures/fineweb_edu_tokenizer_samples.json
+```
+
+Sharding:
+```bash
+uv run python scripts/data/process_mixture.py \
+  configs/data/fineweb_edu_mixture_sample.yaml \
+  --tokenizer-path artifacts/tokenizer/fineweb_edu/spm_32000_unigram.model \
+  --log-file data/mixtures/fineweb_edu_sample_shards.json
+```
+
+If you want to more closely mimic “long document” regimes, filter first (higher `min_chars` / `max_chars`)
+and then switch the manifest entry to `dataset: text` + `data_files: <filtered_file>`. The tokenizer and
+sharding scripts accept `data_files` and will enforce the requested split.
+
+### 4.1.1 FineWeb-Edu long-doc filtered sample (turnkey)
+
+For a concrete, paper-aligned “long document” recipe, use:
+- `configs/data/fineweb_edu_longdoc_filtered_sample.yaml`
+
+Step 1 — create a filtered long-doc file (example settings; tune `min_chars`/`max_chars` to match your needs):
+
+```bash
+uv run python scripts/data/filter_corpus.py \
+  --dataset HuggingFaceFW/fineweb-edu \
+  --subset sample-10BT \
+  --split train \
+  --text-column text \
+  --target-lang en \
+  --lang-threshold 0.85 \
+  --min-chars 2000 \
+  --max-chars 20000 \
+  --limit 5000 \
+  --output-path data/filtered/fineweb_edu_longdoc_en_sample.txt \
+  --force-exit
+```
+
+Step 2 — train a tokenizer on that filtered file:
+
+```bash
+uv run python scripts/data/train_tokenizer.py \
+  --manifest configs/data/fineweb_edu_longdoc_filtered_sample.yaml \
+  --vocab-size 32000 \
+  --output-dir artifacts/tokenizer/fineweb_edu_longdoc \
+  --log-file data/mixtures/fineweb_edu_longdoc_tokenizer_samples.json
+```
+
+Step 3 — shard into tokenized `.npy` shards:
+
+```bash
+uv run python scripts/data/process_mixture.py \
+  configs/data/fineweb_edu_longdoc_filtered_sample.yaml \
+  --tokenizer-path artifacts/tokenizer/fineweb_edu_longdoc/spm_32000_unigram.model \
+  --log-file data/mixtures/fineweb_edu_longdoc_sample_shards.json
+```
+
+All outputs (`data/filtered/`, `data/shards/`, `artifacts/tokenizer/`) are gitignored.
+
+## 5. Artifacts & stats
+- Tokenizer samples: `data/mixtures/refinedweb_mix_tokenizer.json`
+- Shard stats (pilot stream): `data/mixtures/refinedweb_mix_shards.json`
+- Shard stats (filtered sample run): `data/mixtures/refinedweb_mix_filtered_shards.json`
+- Shard stats (full filtered run, seq_len=2048): `data/mixtures/refinedweb_mix_shards_full.json`
+- Latest corpus verification log: `logs/data_inventory_2025-11-10.md` (matches `data/mixtures/refinedweb_mix_full_shards.json` with `verified_at_utc` timestamp).
+- Tokenizer model: `artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model`
+- Continual-learning sample segments: `configs/data/continual_segments_sample.yaml`
+
+## 6. Next steps
+- Integrate the full shards into the training configs (see `configs/hope/mid.yaml`, `configs/hope/target.yaml`).
+- Automate periodic re-generation (e.g., weekly) if new data arrives.
+- Version mixture manifests and stats under `configs/data/` as recipes evolve.

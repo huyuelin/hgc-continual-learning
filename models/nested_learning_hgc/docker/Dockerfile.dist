@@ -1,0 +1,7 @@
+FROM scratch
+
+LABEL org.opencontainers.image.title="nested-learning-dist"
+LABEL org.opencontainers.image.description="OCI bundle containing nested-learning wheel/sdist/checksums from CI release builds."
+
+# Built artifacts generated in workflow before image build.
+COPY dist/ /dist/

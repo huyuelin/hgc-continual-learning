@@ -1,0 +1,231 @@
+import torch
+import torch.nn.functional as F
+
+from nested_learning.levels import LevelSpec
+from nested_learning.model import HOPEModel, ModelConfig
+from nested_learning.titan.model import TitanOnlyModel, TitanOnlyModelConfig
+from nested_learning.training import _compute_layer_teach_signals, compute_teach_signal
+
+
+def _tiny_config() -> ModelConfig:
+    titan = LevelSpec(name="titan", update_period=2, optimizer_key="titan_opt")
+    cms = [
+        LevelSpec(name="cms_fast", update_period=1, optimizer_key="cms_opt"),
+        LevelSpec(name="cms_mid", update_period=4, optimizer_key="cms_opt"),
+    ]
+    return ModelConfig(
+        vocab_size=32,
+        dim=16,
+        num_layers=2,
+        heads=4,
+        titan_level=titan,
+        cms_levels=cms,
+        optimizers=None,
+        teach_scale=0.1,
+    )
+
+
+def _tiny_titan_config() -> TitanOnlyModelConfig:
+    titan = LevelSpec(name="titan", update_period=2, optimizer_key="titan_opt")
+    return TitanOnlyModelConfig(
+        vocab_size=32,
+        dim=16,
+        num_layers=2,
+        heads=4,
+        titan_level=titan,
+        optimizers=None,
+        teach_scale=0.1,
+    )
+
+
+def test_teach_signal_matches_gradient() -> None:
+    torch.manual_seed(0)
+    cfg = _tiny_config()
+    model = HOPEModel(cfg)
+    tokens = torch.randint(0, cfg.vocab_size, (2, 6))
+
+    hidden_cache: dict[str, torch.Tensor] = {}
+
+    def hook(_, __, output: torch.Tensor) -> None:
+        output.retain_grad()
+        hidden_cache["hidden"] = output
+
+    handle = model.norm.register_forward_hook(hook)
+    logits = model(tokens)
+    teach_signal = compute_teach_signal(model, logits, tokens)
+    loss = F.cross_entropy(
+        logits[:, :-1].reshape(-1, cfg.vocab_size),
+        tokens[:, 1:].reshape(-1),
+    )
+    loss.backward()
+    handle.remove()
+
+    hidden = hidden_cache["hidden"]
+    assert hidden.grad is not None
+    grad = hidden.grad
+    assert torch.allclose(teach_signal, grad, atol=1e-5, rtol=1e-4)
+
+
+def test_teach_signal_matches_gradient_titan() -> None:
+    torch.manual_seed(0)
+    cfg = _tiny_titan_config()
+    model = TitanOnlyModel(cfg)
+    tokens = torch.randint(0, cfg.vocab_size, (2, 6))
+
+    hidden_cache: dict[str, torch.Tensor] = {}
+
+    def hook(_, __, output: torch.Tensor) -> None:
+        output.retain_grad()
+        hidden_cache["hidden"] = output
+
+    handle = model.norm.register_forward_hook(hook)
+    logits = model(tokens)
+    teach_signal = compute_teach_signal(model, logits, tokens)
+    loss = F.cross_entropy(
+        logits[:, :-1].reshape(-1, cfg.vocab_size),
+        tokens[:, 1:].reshape(-1),
+    )
+    loss.backward()
+    handle.remove()
+
+    hidden = hidden_cache["hidden"]
+    assert hidden.grad is not None
+    grad = hidden.grad
+    assert torch.allclose(teach_signal, grad, atol=1e-5, rtol=1e-4)
+
+
+def test_per_layer_teach_signal_shapes() -> None:
+    torch.manual_seed(0)
+    cfg = _tiny_config()
+    model = HOPEModel(cfg)
+    tokens = torch.randint(0, cfg.vocab_size, (2, 6))
+    logits, _pre, block_outputs = model.forward_with_block_outputs(tokens)
+    loss = F.cross_entropy(
+        logits[:, :-1].reshape(-1, cfg.vocab_size),
+        tokens[:, 1:].reshape(-1),
+    )
+    teach_signals = _compute_layer_teach_signals(loss, block_outputs)
+    assert len(teach_signals) == cfg.num_layers
+    for signal, output in zip(teach_signals, block_outputs):
+        assert signal.shape == output.shape
+
+
+def test_per_layer_teach_signal_matches_autograd_grads() -> None:
+    torch.manual_seed(0)
+    cfg = _tiny_config()
+    model = HOPEModel(cfg)
+    tokens = torch.randint(0, cfg.vocab_size, (2, 6))
+    logits, _pre, block_outputs = model.forward_with_block_outputs(tokens)
+    loss = F.cross_entropy(
+        logits[:, :-1].reshape(-1, cfg.vocab_size),
+        tokens[:, 1:].reshape(-1),
+    )
+    expected = torch.autograd.grad(loss, block_outputs, retain_graph=True, allow_unused=False)
+    teach_signals = _compute_layer_teach_signals(loss, block_outputs)
+    for exp, actual in zip(expected, teach_signals):
+        assert torch.allclose(actual, exp.detach(), atol=1e-6, rtol=1e-6)
+
+
+def test_teach_signal_matches_gradient_with_ignore_index() -> None:
+    torch.manual_seed(0)
+    cfg = _tiny_config()
+    model = HOPEModel(cfg)
+    tokens = torch.randint(1, cfg.vocab_size, (2, 6))
+    tokens[0, 2] = 0
+    tokens[1, 4] = 0
+
+    hidden_cache: dict[str, torch.Tensor] = {}
+
+    def hook(_, __, output: torch.Tensor) -> None:
+        output.retain_grad()
+        hidden_cache["hidden"] = output
+
+    handle = model.norm.register_forward_hook(hook)
+    logits = model(tokens)
+    teach_signal = compute_teach_signal(model, logits, tokens, ignore_index=0)
+    loss = F.cross_entropy(
+        logits[:, :-1].reshape(-1, cfg.vocab_size),
+        tokens[:, 1:].reshape(-1),
+        ignore_index=0,
+    )
+    loss.backward()
+    handle.remove()
+
+    hidden = hidden_cache["hidden"]
+    assert hidden.grad is not None
+    grad = hidden.grad
+    assert torch.allclose(teach_signal, grad, atol=1e-5, rtol=1e-4)
+
+    ignored = tokens[:, 1:] == 0
+    masked = teach_signal[:, :-1][ignored]
+    assert torch.allclose(masked, torch.zeros_like(masked))
+
+
+def test_teach_signal_matches_gradient_with_boundary_target() -> None:
+    torch.manual_seed(0)
+    cfg = _tiny_config()
+    model = HOPEModel(cfg)
+    tokens = torch.randint(0, cfg.vocab_size, (2, 5))
+    next_tokens = torch.randint(0, cfg.vocab_size, (2,))
+
+    hidden_cache: dict[str, torch.Tensor] = {}
+
+    def hook(_, __, output: torch.Tensor) -> None:
+        output.retain_grad()
+        hidden_cache["hidden"] = output
+
+    handle = model.norm.register_forward_hook(hook)
+    logits = model(tokens)
+    teach_signal = compute_teach_signal(model, logits, tokens, next_tokens=next_tokens)
+    targets = torch.cat([tokens[:, 1:], next_tokens.unsqueeze(1)], dim=1)
+    loss = F.cross_entropy(
+        logits.reshape(-1, cfg.vocab_size),
+        targets.reshape(-1),
+    )
+    loss.backward()
+    handle.remove()
+
+    hidden = hidden_cache["hidden"]
+    assert hidden.grad is not None
+    grad = hidden.grad
+    assert torch.allclose(teach_signal, grad, atol=1e-5, rtol=1e-4)
+
+
+def test_teach_signal_matches_gradient_with_boundary_target_and_ignore_index() -> None:
+    torch.manual_seed(0)
+    cfg = _tiny_config()
+    model = HOPEModel(cfg)
+    tokens = torch.randint(1, cfg.vocab_size, (2, 5))
+    next_tokens = torch.randint(1, cfg.vocab_size, (2,))
+    # Mark one in-sequence target and one boundary target as ignored.
+    tokens[0, 2] = 0
+    next_tokens[1] = 0
+
+    hidden_cache: dict[str, torch.Tensor] = {}
+
+    def hook(_, __, output: torch.Tensor) -> None:
+        output.retain_grad()
+        hidden_cache["hidden"] = output
+
+    handle = model.norm.register_forward_hook(hook)
+    logits = model(tokens)
+    teach_signal = compute_teach_signal(
+        model,
+        logits,
+        tokens,
+        next_tokens=next_tokens,
+        ignore_index=0,
+    )
+    targets = torch.cat([tokens[:, 1:], next_tokens.unsqueeze(1)], dim=1)
+    loss = F.cross_entropy(
+        logits.reshape(-1, cfg.vocab_size),
+        targets.reshape(-1),
+        ignore_index=0,
+    )
+    loss.backward()
+    handle.remove()
+
+    hidden = hidden_cache["hidden"]
+    assert hidden.grad is not None
+    grad = hidden.grad
+    assert torch.allclose(teach_signal, grad, atol=1e-5, rtol=1e-4)

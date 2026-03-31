@@ -1,0 +1,80 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
+
+model:
+  vocab_size: 32000
+  dim: 128
+  num_layers: 2
+  heads: 4
+  titan_level:
+    name: titan
+    update_period: 8
+    optimizer_key: titan_opt
+  cms_levels:
+    - name: cms_fast
+      update_period: 1
+      optimizer_key: cms_opt
+    - name: cms_mid
+      update_period: 4
+      optimizer_key: cms_opt
+    - name: cms_slow
+      update_period: 16
+      optimizer_key: cms_opt
+  optimizers:
+    titan_opt:
+      type: deep_momentum
+      lr: 1.0e-3
+      params:
+        beta: 0.9
+        beta2: 0.999
+    cms_opt:
+      type: deep_momentum
+      lr: 5.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+
+data:
+  source: synthetic
+  vocab_size: 32000
+  seq_len: 64
+  dataset_size: 1024
+  batch_size: 4
+  num_workers: 0
+
+train:
+  strict_streaming_contract: false
+  online_updates: true
+  online_chunk_size: 0
+  online_boundary_targets: false
+  online_carry_attention_cache: false
+  per_layer_teach_signal: true
+  steps: 10
+  log_interval: 1
+  device: "cpu"
+  seed: 1234
+  deterministic: true
+  mixed_precision:
+    enabled: false
+    dtype: bf16
+  compile:
+    enable: false
+  checkpoint:
+    enable: true
+    dir: artifacts/checkpoints/pilot_smoke
+    save_interval: 10
+    save_last: true
+
+optim:
+  type: adamw
+  lr: 3.0e-4
+  fused: false
+
+logging:
+  enabled: true
+  backend: json
+  path: logs/pilot_smoke.json

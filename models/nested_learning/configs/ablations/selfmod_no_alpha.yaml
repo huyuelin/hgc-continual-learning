@@ -1,0 +1,23 @@
+defaults:
+  - /pilot
+  - _self_
+
+model:
+  block_variant: hope_selfmod
+  self_mod_use_alpha: false
+
+train:
+  online_updates: true
+  online_chunk_size: 0
+  per_layer_teach_signal: true
+  steps: 5000
+  device: "cuda:1"
+  checkpoint:
+    dir: artifacts/checkpoints/pilot_selfmod_no_alpha
+    save_interval: 1000
+
+logging:
+  enabled: true
+  backend: json
+  path: logs/pilot_selfmod_no_alpha_metrics.json
+  run_name: pilot-selfmod-no-alpha

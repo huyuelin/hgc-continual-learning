@@ -1,0 +1,145 @@
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
+
+model:
+  vocab_size: 32000
+  dim: 1536
+  num_layers: 32
+  heads: 24
+  surprise_threshold: null
+  freeze_backbone: false
+  titan_level:
+    name: titan
+    update_period: 32
+    optimizer_key: titan_opt
+  cms_levels:
+    - name: cms_fast
+      update_period: 1
+      optimizer_key: cms_fast_opt
+    - name: cms_mid
+      update_period: 4
+      optimizer_key: cms_mid_opt
+    - name: cms_slow
+      update_period: 32
+      optimizer_key: cms_slow_opt
+    - name: cms_ultra
+      update_period: 128
+      optimizer_key: cms_slow_opt
+    - name: cms_anchor
+      update_period: 512
+      optimizer_key: cms_anchor_opt
+  optimizers:
+    titan_opt:
+      type: deep_momentum
+      lr: 6.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+        variant: nl_l2_precond
+    cms_fast_opt:
+      type: deep_momentum
+      lr: 3.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+        variant: nl_l2_precond
+    cms_mid_opt:
+      type: deep_momentum
+      lr: 2.5e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+        variant: nl_l2_precond
+    cms_slow_opt:
+      type: deep_momentum
+      lr: 2.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+        variant: nl_l2_precond
+    cms_anchor_opt:
+      type: deep_momentum
+      lr: 1.5e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+        variant: nl_l2_precond
+
+data:
+  source: mixture
+  batch_size: 32
+  num_workers: 8
+  mixture:
+    samples_per_epoch: 32768
+    seed: 123
+    sources:
+      - name: refinedweb
+        shards_dir: data/shards/refinedweb_filtered
+        weight: 0.35
+      - name: wikipedia
+        shards_dir: data/shards/wikipedia_filtered
+        weight: 0.2
+      - name: c4
+        shards_dir: data/shards/c4_filtered
+        weight: 0.15
+      - name: redpajama
+        shards_dir: data/shards/redpajama_filtered
+        weight: 0.2
+      - name: code
+        shards_dir: data/shards/code_filtered
+        weight: 0.1
+
+train:
+  strict_streaming_contract: false
+  online_updates: true
+  online_chunk_size: 0
+  online_boundary_targets: false
+  online_carry_attention_cache: false
+  per_layer_teach_signal: true
+  steps: 200
+  log_interval: 10
+  device: "cuda:1"
+  seed: 9001
+  deterministic: false
+  step_offset: 0
+  mixed_precision:
+    enabled: true
+    dtype: bf16
+  compile:
+    enable: true
+    mode: max-autotune
+  fsdp:
+    auto_wrap_min_params: 2000000
+    cpu_offload: false
+  checkpoint:
+    enable: true
+    dir: checkpoints/target
+    save_interval: 100
+    resume_path: null
+    resume_tag: null
+
+optim:
+  type: muon
+  lr: 1.5e-4
+  weight_decay: 0.02
+  momentum: 0.95
+  betas:
+    - 0.9
+    - 0.999
+
+logging:
+  enabled: false
+  backend: wandb
+  project: nested-learning
+  run_name: target-${now:%Y%m%d%H%M%S}
+  path: logs/target_metrics.json
+
+deepspeed:
+  config: configs/deepspeed/zero3.json
